@@ -1,0 +1,258 @@
+/*private void ProcessPlayback(float delta)
+{
+    var direction = reversePlayback ? -1f : 1f;
+    playbackTime += delta * timeScale * direction;
+
+    var lastTime = recorder.GetLastFrameTime();
+    var firstTime = recorder.GetFirstFrameTime();
+
+    if (loopPlayback)
+    {
+        if (reversePlayback && playbackTime < firstTime)
+        {
+            playbackTime = lastTime;
+            lastFrameIndex = -1;
+        }
+        else if (!reversePlayback && playbackTime > lastTime)
+        {
+            playbackTime = firstTime;
+            lastFrameIndex = -1;
+        }
+    }
+    else
+    {
+        playbackTime = Mathf.Clamp(playbackTime, firstTime, lastTime);
+
+        if ((reversePlayback && playbackTime <= firstTime) ||
+            (!reversePlayback && playbackTime >= lastTime))
+        {
+            isPlaying = false;
+            return;
+        }
+    }
+
+    if (!TryGetInterpolatedFrame(playbackTime, out var interpolatedFrame))
+        return;
+
+    ApplyInterpolatedFrame(interpolatedFrame);
+}
+
+private bool TryGetInterpolatedFrame(float t, out PlayerFrame result)
+{
+    result = default;
+
+    if (recorder.FrameCount < 2)
+        return false;
+
+    var index = recorder.FindFrameIndexByTime(t);
+
+    if (index == lastFrameIndex && index > 0)
+    {
+        if (!recorder.GetFrame(index, out var curr) || !recorder.GetFrame(index - 1, out var prev))
+            return false;
+
+        var blend = Mathf.InverseLerp(prev.time, curr.time, t);
+        result = InterpolateFrames(prev, curr, blend, t);
+        return true;
+    }
+
+    lastFrameIndex = index;
+
+    if (index <= 0)
+    {
+        return recorder.GetFrame(0, out result);
+    }
+
+    if (index >= recorder.FrameCount)
+    {
+        return recorder.GetFrame(recorder.FrameCount - 1, out result);
+    }
+
+    if (!recorder.GetFrame(index, out var currentFrame))
+        return false;
+
+    if (!recorder.GetFrame(index - 1, out var previousFrame))
+        return false;
+
+    var blendFactor = Mathf.InverseLerp(previousFrame.time, currentFrame.time, t);
+    result = InterpolateFrames(previousFrame, currentFrame, blendFactor, t);
+
+    return true;
+}
+
+private static PlayerFrame InterpolateFrames(PlayerFrame prev, PlayerFrame curr, float blend, float time)
+{
+    return new PlayerFrame
+    {
+        position = Vector3.Lerp(prev.position, curr.position, blend),
+        //rotation = Quaternion.SlerpUnclamped(prev.rotation, curr.rotation, blend),
+        normalizedAnimTime = Mathf.Lerp(prev.normalizedAnimTime, curr.normalizedAnimTime, blend),
+        moveDirection = Vector2.Lerp(prev.moveDirection, curr.moveDirection, blend),
+        isJumping = blend < 0.5f ? prev.isJumping : curr.isJumping,
+        time = time
+    };
+}
+
+private void ApplyInterpolatedFrame(PlayerFrame frame)
+{
+    if (mirrorMode)
+    {
+        var newFramePosition = frame.position;
+        newFramePosition.z = -newFramePosition.z;
+        transform.position = newFramePosition + moveOffset;
+    }
+    else
+    {
+        transform.position = frame.position + moveOffset;
+    }
+    //transform.rotation = frame.rotation;
+
+    if (ghostAnimator == null)
+        return;
+
+    var isMoving = frame.moveDirection.magnitude > 0.01f;
+
+    if (mirrorMode)
+    {
+        ghostAnimator.SetFloat(DirectionX, -frame.moveDirection.x);
+        ghostAnimator.SetFloat(DirectionY, frame.moveDirection.y);
+    }
+    else
+    {
+        ghostAnimator.SetFloat(DirectionX, frame.moveDirection.x);
+        ghostAnimator.SetFloat(DirectionY, frame.moveDirection.y);
+    }
+
+    ghostAnimator.SetBool(IsMoving, isMoving);
+
+    var isGhostPlayerJumping = frame.isJumping;
+    ghostAnimator.SetBool(IsJumpingHash, isGhostPlayerJumping);
+
+    if (frame.isJumping && !isJumping)
+    {
+        isJumping = true;
+        ghostAnimator.SetTrigger(JumpTrigger);
+    }
+}
+
+public void OnJumpEnd()
+{
+    isJumping = false;
+}
+
+#region Public Control Methods
+
+[Button]
+public void Play()
+{
+    if (recorder == null || recorder.FrameCount == 0)
+    {
+        Debug.LogWarning("[GhostPlayer] Cannot play: no frames recorded");
+        return;
+    }
+
+    isPlaying = true;
+}
+
+[Button]
+public void Pause()
+{
+    isPlaying = false;
+}
+
+[Button]
+public void Stop()
+{
+    isPlaying = false;
+    playbackTime = reversePlayback ? recorder.GetLastFrameTime() : recorder.GetFirstFrameTime();
+    lastFrameIndex = -1;
+
+    ghostAnimator.SetFloat(DirectionX, 0);
+    ghostAnimator.SetFloat(DirectionY, 0);
+    ghostAnimator.SetBool(IsMoving, false);
+    isJumping = false;
+}
+
+[Button]
+public void Restart()
+{
+    Stop();
+    Play();
+}
+
+[Button]
+public void SeekToTime(float time)
+{
+    playbackTime = time;
+    lastFrameIndex = -1;
+}
+
+[Button]
+public void SetTimeScale(float scale)
+{
+    timeScale = scale;
+}
+
+[Button]
+public void SetReverse(bool reverse)
+{
+    reversePlayback = reverse;
+    ToggleSpeedMultiplier();
+}
+
+[Button]
+public void ToggleReverse()
+{
+    reversePlayback = !reversePlayback;
+    ToggleSpeedMultiplier();
+}
+
+private void ToggleSpeedMultiplier()
+{
+    if (ghostAnimator == null)
+        return;
+
+    ghostAnimator.SetFloat("speedMultiplier", reversePlayback ? -1f : 1f);
+}
+
+#endregion
+
+#region Properties
+
+public bool IsPlaying => isPlaying;
+public float PlaybackTime => playbackTime;
+public bool IsReversed => reversePlayback;
+
+private float PlaybackProgress
+{
+    get
+    {
+        if (recorder == null || recorder.FrameCount == 0)
+            return 0f;
+
+        var duration = recorder.GetLastFrameTime() - recorder.GetFirstFrameTime();
+        return duration <= 0 ? 0f : Mathf.Clamp01((playbackTime - recorder.GetFirstFrameTime()) / duration);
+    }
+}
+
+#endregion
+
+#if UNITY_EDITOR
+private void OnGUI()
+{
+    if (!showDebugInfo || recorder == null)
+        return;
+
+    GUILayout.BeginArea(new Rect(10, 10, 300, 150));
+    GUILayout.Box("Ghost Player Debug");
+    GUILayout.Label($"Playing: {isPlaying}");
+    GUILayout.Label($"Reversed: {reversePlayback}");
+    GUILayout.Label($"Time: {playbackTime:F2}s");
+    GUILayout.Label($"Progress: {PlaybackProgress * 100:F1}%");
+    GUILayout.Label($"Speed: {timeScale}x");
+    GUILayout.Label($"Frames: {recorder.FrameCount}");
+    GUILayout.Label($"Last Index: {lastFrameIndex}");
+    GUILayout.EndArea();
+}
+#endif*/
+    
